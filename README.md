@@ -8,18 +8,18 @@
 
 拦截图片/视频自动加载，改为右键按需加载；Alt+R 进入 Readability 阅读模式；Alt+S 手动选择正文并按站点记忆。
 
-**[点击安装](https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/clean-reader.user.js)**
+**[点击安装](https://raw.githubusercontent.com/HeyAlaia/broswer-script/main/clean-reader.user.js)**
 
 ### 🚫 搜索结果屏蔽器（Bing + DuckDuckGo）
 
 双层屏蔽 CSDN、百度系等低质量站点：搜索词自动追加 `-site:` 服务端过滤 + 结果页 DOM 隐藏；悬停结果可一键屏蔽任意站点。
 
-**[点击安装](https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/bing-search-blocker.user.js)**
+**[点击安装](https://raw.githubusercontent.com/HeyAlaia/broswer-script/main/bing-search-blocker.user.js)**
 
 ## 安装
 
 1. 浏览器安装 [Tampermonkey](https://www.tampermonkey.net/) 扩展；
-2. 点击上方"点击安装"链接（先把 `YOUR_USERNAME/YOUR_REPO` 换成本仓库实际地址）；
+2. 点击上方"点击安装"链接（先把 `HeyAlaia/broswer-script` 换成本仓库实际地址）；
 3. Tampermonkey 会弹出安装页，点"安装"即可。之后扩展会按 `@updateURL` 自动检查更新。
 
 ## 更新流程
@@ -32,4 +32,4 @@
 
 - `raw.githubusercontent.com` 在大陆直连经常被污染。如果安装/更新失败：
   - 走代理，或
-  - 把安装链接和脚本头部 `@downloadURL`/`@updateURL` 中的域名换成 `cdn.jsdelivr.net/gh/YOUR_USERNAME/YOUR_REPO@main/...`（jsDelivr 有约 12 小时缓存，急更可去 purge.jsdelivr.net 手动刷新）。
+  - 把安装链接和脚本头部 `@downloadURL`/`@updateURL` 中的域名换成 `cdn.jsdelivr.net/gh/HeyAlaia/broswer-script@main/...`（jsDelivr 有约 12 小时缓存，急更可去 purge.jsdelivr.net 手动刷新）。

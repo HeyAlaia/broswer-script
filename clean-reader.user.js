@@ -11,6 +11,8 @@
 // @run-at       document-start
 // @noframes
 // @require      https://cdn.jsdelivr.net/npm/@mozilla/readability@0.4.4/Readability.js
+// @downloadURL  https://raw.githubusercontent.com/HeyAlaia/broswer-script/main/clean-reader.user.js
+// @updateURL    https://raw.githubusercontent.com/HeyAlaia/broswer-script/main/clean-reader.user.js
 // ==/UserScript==
 
 (function () {

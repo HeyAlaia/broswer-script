@@ -11,6 +11,8 @@
 // @grant        GM_registerMenuCommand
 // @run-at       document-start
 // @noframes
+// @downloadURL  https://raw.githubusercontent.com/HeyAlaia/broswer-script/main/bing-search-blocker.user.js
+// @updateURL    https://raw.githubusercontent.com/HeyAlaia/broswer-script/main/bing-search-blocker.user.js
 // ==/UserScript==
 
 (function () {
