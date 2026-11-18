@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         搜索结果屏蔽器（Bing + DuckDuckGo）
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      1.4
 // @description  必应 / DDG 双重屏蔽：搜索词自动追加 -site: 二次防护（服务端过滤）+ 结果页 DOM 隐藏；悬停一键"屏蔽此站"，名单随时编辑
 // @match        *://*.bing.com/search*
 // @match        *://*.duckduckgo.com/*
@@ -216,26 +216,42 @@
     /* ============================================================
      * 名单存取 + 菜单
      * ============================================================ */
+    // 统一域名写法：*.csdn.net / .csdn.net / https://blog.csdn.net/x → csdn.net
+    // 说明：site: 语法和本脚本的子域匹配本就覆盖全部子域，* 是非法语法
+    // （实测 Bing 会把 site:*.csdn.net 整个丢弃导致过滤失效），故归一化去掉
+    function normalizeHost(s) {
+        return String(s).trim().toLowerCase()
+            .replace(/^[a-z][a-z0-9+.-]*:\/\//, '') // 去协议头 https://
+            .split(/[/?#]/)[0]                       // 去路径/参数
+            .replace(/^\*+\./, '')                   // *.csdn.net → csdn.net
+            .replace(/^\.+/, '')                     // .csdn.net → csdn.net
+            .replace(/^www\./, '');
+    }
+
     function getHosts() {
         const raw = GM_getValue(STORE_KEY, null);
         if (raw == null || raw === '') return DEFAULT_HOSTS.slice();
         try {
             const list = JSON.parse(raw);
-            return Array.isArray(list) ? list : DEFAULT_HOSTS.slice();
+            if (!Array.isArray(list)) return DEFAULT_HOSTS.slice();
+            // 兼容历史数据里可能存的 *.x 写法
+            return list.map(normalizeHost).filter(Boolean);
         } catch (e) { return DEFAULT_HOSTS.slice(); }
     }
     function setHosts(list) { GM_setValue(STORE_KEY, JSON.stringify(list)); }
 
     GM_registerMenuCommand('编辑屏蔽域名列表', function () {
         const input = prompt(
-            '每行一个域名（自动匹配所有子域；清空并确定 = 恢复默认，完全不屏蔽请直接停用脚本）：',
+            '每行一个域名，支持 *.csdn.net / csdn.net / 完整 URL 三种写法' +
+            '（均自动匹配所有子域；清空并确定 = 恢复默认，完全不屏蔽请直接停用脚本）：',
             getHosts().join('\n')
         );
         if (input === null) return; // 取消
-        const parsed = input
-            .split(/[\s,，;；]+/)
-            .map(function (s) { return s.trim().toLowerCase().replace(/^www\./, ''); })
-            .filter(Boolean);
+        const parsed = [];
+        input.split(/[\s,，;；]+/).forEach(function (s) {
+            const h = normalizeHost(s);
+            if (h && parsed.indexOf(h) === -1) parsed.push(h); // 去重
+        });
         GM_setValue(STORE_KEY, parsed.length ? JSON.stringify(parsed) : '');
         scan();
     });
