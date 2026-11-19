@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         搜索结果屏蔽器（Bing + DuckDuckGo）
 // @namespace    http://tampermonkey.net/
-// @version      1.6
+// @version      1.7
 // @description  必应 / DDG 双重屏蔽：搜索词自动追加 -site: 二次防护（服务端过滤）+ 结果页 DOM 隐藏；悬停一键"屏蔽此站"，名单随时编辑
 // @match        *://*.bing.com/search*
 // @match        *://*.duckduckgo.com/*
@@ -334,6 +334,18 @@
         try { u = new URL(location.href); } catch (e) { return; }
         const q = u.searchParams.get('q');
         if (!q || !q.trim()) return;
+
+        // 分页路径（first>=11）：实测 Bing 对分页请求的查询预算更短，
+        // 4 个以上 -site: 会从前往后被服务端丢弃（操作符失效 + 页码也被忽略，
+        // 永远返回第 1 页）。摘掉操作符保住翻页，拦截交给 DOM 层兜底。
+        const first = parseInt(u.searchParams.get('first') || '1', 10) || 1;
+        if (first > 10) {
+            if (/-site:/i.test(q)) {
+                u.searchParams.set('q', q.replace(/(^|\s)-site:\S+/gi, '').replace(/\s+/g, ' ').trim());
+                location.replace(u.href);
+            }
+            return;
+        }
 
         const missing = getHosts().filter(function (h) {
             return !hasSiteToken(q, h.toLowerCase());
