@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         搜索结果屏蔽器（Bing + DuckDuckGo）
 // @namespace    http://tampermonkey.net/
-// @version      1.4
+// @version      1.6
 // @description  必应 / DDG 双重屏蔽：搜索词自动追加 -site: 二次防护（服务端过滤）+ 结果页 DOM 隐藏；悬停一键"屏蔽此站"，名单随时编辑
 // @match        *://*.bing.com/search*
 // @match        *://*.duckduckgo.com/*
@@ -153,7 +153,24 @@
 
     /* ============================================================
      * 顶部提示条：🚫 已屏蔽 N 条（明细）· 临时显示/重新隐藏
+     * rdr=1（Bing 服务端改写查询、忽略 site: 过滤）时升级为警告
+     * 并提供 DDG 同词搜索出口——DDG 严格尊重 -site: 语法
      * ============================================================ */
+    // 铁证式判定：查询词里明确写了 -site:某域，结果里却真的出现了该域（含子域）
+    // （rdr=1 只是 Bing 内部跳转标记，普通搜索也常带，直接用它会误报）
+    function bingIgnoredFilters(hits) {
+        if (!/(^|\.)bing\.com$/.test(location.hostname)) return false;
+        let q = '';
+        try { q = (new URLSearchParams(location.search).get('q') || '').toLowerCase(); } catch (e) { /* 保底空词 */ }
+        const tokens = (q.match(/-site:([a-z0-9.-]+)/g) || []).map(function (t) { return t.slice(6); });
+        if (!tokens.length) return false;
+        return Object.keys(hits).some(function (host) {
+            return tokens.some(function (x) {
+                return host === x || host.endsWith('.' + x);
+            });
+        });
+    }
+
     function updateBar(count, hits, engine) {
         let bar = document.getElementById('crsb-bar');
         if (count === 0) { if (bar) bar.remove(); return; }
@@ -171,14 +188,30 @@
         }
 
         // 内容没变就不动 DOM，避免和 MutationObserver 互相触发死循环
+        const ignored = bingIgnoredFilters(hits);
         const detail = Object.keys(hits).map(function (h) { return h + '×' + hits[h]; }).join('、');
-        const state = count + '|' + detail + '|' + showBlocked;
+        const state = count + '|' + detail + '|' + showBlocked + '|' + ignored;
         if (bar.dataset.state === state) return;
         bar.dataset.state = state;
+        bar.classList.toggle('rdr-warn', ignored);
 
         while (bar.firstChild) bar.removeChild(bar.firstChild);
         const span = document.createElement('span');
-        span.textContent = '🚫 已屏蔽 ' + count + ' 条结果（' + detail + '）';
+        span.textContent = ignored
+            ? '⚠️ Bing 忽略了查询中的 -site: 过滤，泄漏结果已隐藏 ' + count + ' 条（' + detail + '）'
+            : '🚫 已屏蔽 ' + count + ' 条结果（' + detail + '）';
+        bar.appendChild(span);
+
+        if (ignored) {
+            const ddg = document.createElement('a');
+            let q = '';
+            try { q = new URLSearchParams(location.search).get('q') || ''; } catch (e) { /* 保底空词 */ }
+            ddg.href = 'https://duckduckgo.com/?q=' + encodeURIComponent(q);
+            ddg.textContent = '用 DDG 搜同词 →';
+            ddg.title = 'DDG 严格尊重 -site: 过滤，不会改写查询';
+            bar.appendChild(ddg);
+        }
+
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.textContent = showBlocked ? '重新隐藏' : '临时显示';
@@ -186,7 +219,6 @@
             showBlocked = !showBlocked;
             scan();
         });
-        bar.appendChild(span);
         bar.appendChild(btn);
     }
 
@@ -263,6 +295,25 @@
     });
 
     /* ============================================================
+     * Bing 国际版开关（ENSEARCH Cookie，等同官网底部"国际版"切换）
+     * 实测：国内版可能忽略 -site: 过滤词导致泄漏；国际版则严格尊重
+     * ============================================================ */
+    GM_registerMenuCommand('切换 Bing 国际版（让 -site: 过滤生效）', function () {
+        if (!/(^|\.)bing\.com$/.test(location.hostname)) {
+            alert('请先打开任意 bing.com 搜索页，再执行本命令');
+            return;
+        }
+        const on = /(?:^|;\s*)ENSEARCH=BENVER=1(?:;|$)/.test(document.cookie);
+        if (on) {
+            document.cookie = 'ENSEARCH=BENVER=1; domain=.bing.com; path=/; max-age=0';
+            alert('已切回 Bing 国内版（注意：国内版可能忽略 -site: 过滤词）');
+        } else {
+            document.cookie = 'ENSEARCH=BENVER=1; domain=.bing.com; path=/; max-age=31536000';
+            alert('已启用 Bing 国际版，-site: 过滤将被严格执行。\n下次搜索即生效，结果整体会更偏国际内容。');
+        }
+    });
+
+    /* ============================================================
      * 二次防护：自动给搜索词追加 -site:xxx（服务端就不返回这些站）
      * 在 document-start 阶段改写 URL 重定向，页面渲染前完成
      * ============================================================ */
@@ -318,6 +369,9 @@
         '#crsb-bar { display: flex; align-items: center; gap: 12px; margin: 0 0 8px 0;',
         '  padding: 8px 12px; background: rgba(125,125,125,.12); color: inherit;',
         '  border: 1px solid rgba(125,125,125,.35); border-radius: 6px; font: 13px sans-serif; }',
+        '#crsb-bar.rdr-warn { background: rgba(196,43,28,.12); border-color: rgba(196,43,28,.4); }',
+        '#crsb-bar a { color: #1a5fb4; text-decoration: none; font-weight: bold; white-space: nowrap; }',
+        '#crsb-bar a:hover { text-decoration: underline; }',
         '#crsb-bar button { background: transparent; color: inherit;',
         '  border: 1px solid rgba(125,125,125,.5); border-radius: 4px; padding: 2px 10px;',
         '  cursor: pointer; font-size: 12px; }',
