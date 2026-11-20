@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Clean Reader - 媒体占位 + 阅读模式
 // @namespace    http://tampermonkey.net/
-// @version      4.0
+// @version      4.1
 // @description  媒体自动加载改为右键加载 / Alt+R 阅读模式（Readability + 站点记忆）/ Alt+S 手动选择正文 / Esc 退出
 // @match        *://*/*
 // @grant        GM_addStyle
@@ -120,6 +120,31 @@
         if (!real) return; // 纯 data: 内嵌图或暂无地址：放行不动
 
         el.dataset.phProcessed = '1';
+
+        /* ── 尺寸三源（必须最先做：此刻还没打 phPending、还没动任何样式，
+         *    测到的才是页面自己的真实布局；标记一打，CSS 兜底 min 会污染测量）──
+         * 1. 布局实测 getBoundingClientRect —— CSS/JS/属性/flex 的最终结果，最准
+         * 2. inline style 宽高 / width/height 属性 —— 未布局时仅有的声明
+         */
+        const rect = el.getBoundingClientRect();
+        let w = rect.width > 5 ? rect.width : 0;
+        let h = rect.height > 5 ? rect.height : 0;
+        let ar = null;
+        if (!w || !h) {
+            const sw = parseFloat(el.style.width) || 0;
+            const sh = parseFloat(el.style.height) || 0;
+            const aw = parseFloat(el.getAttribute('width')) || 0;
+            const ah = parseFloat(el.getAttribute('height')) || 0;
+            if (!w) w = sw || aw;
+            if (!h) h = sh || ah;
+            // 属性对完整时推导 aspect-ratio，配合站点自身的响应式规则自动保形
+            if ((!rect.width || !rect.height) && aw > 0 && ah > 0) {
+                ar = Math.round(aw) + ' / ' + Math.round(ah);
+            }
+        }
+        const measured = w > 0 || h > 0;
+
+        /* ── 现在才拦截 ── */
         el.dataset.phPending = '1';
         el.dataset.phPendingSrc = real;
 
@@ -129,29 +154,6 @@
             el.removeAttribute('srcset');
             el.removeAttribute('sizes');
         }
-
-        /* ── 尺寸三源优先级（全部在摘 src 之前，摘后布局立刻塌缩）──
-         * 1. 布局实测 getBoundingClientRect —— CSS/JS/属性/flex 的最终结果，最准
-         * 2. inline style 宽高 —— 未布局时唯一可信的 JS 声明
-         * 3. width/height 属性 —— 有完整声明时推导 aspect-ratio，
-         *    配合站点自身的 max-width:100% 等响应式规则自动保形（浏览器自己算，零成本）
-         */
-        const rect = el.getBoundingClientRect();
-        let w = rect.width > 5 ? rect.width : 0;
-        let h = rect.height > 5 ? rect.height : 0;
-        if (w > 0 || h > 0) el.dataset.phMeasured = '1'; // 实测过，补测跳过
-        if (!w || !h) {
-            const sw = parseFloat(el.style.width) || 0;
-            const sh = parseFloat(el.style.height) || 0;
-            const aw = parseFloat(el.getAttribute('width')) || 0;
-            const ah = parseFloat(el.getAttribute('height')) || 0;
-            if (!w) w = sw || aw;
-            if (!h) h = sh || ah;
-            if (w && h) el.style.aspectRatio = Math.round(w) + ' / ' + Math.round(h);
-        }
-        if (w) el.style.minWidth = Math.round(w) + 'px';
-        if (h) el.style.minHeight = Math.round(h) + 'px';
-
         el.removeAttribute('src');
         for (let i = 0; i < LAZY_ATTRS.length; i++) el.removeAttribute(LAZY_ATTRS[i]);
 
@@ -176,6 +178,18 @@
             }
         }
 
+        // 尺寸落盘：有实测/声明的写 inline 精确框；什么都不知道的标记 blind 给 CSS 兜底，
+        // 变为可见时由共享 IntersectionObserver / 补测实测修正——兜底框不能无差别加，
+        // 否则 130px 会把 16px 的头部图标撑大（比实际大的根源）
+        if (measured) {
+            if (w) el.style.minWidth = Math.round(w) + 'px';
+            if (h) el.style.minHeight = Math.round(h) + 'px';
+            if (ar) el.style.aspectRatio = ar;
+        } else {
+            el.dataset.phBlind = '1';
+            observeBlind(el);
+        }
+
         // 框太小放不下"右键加载"文字（130×44）→ 降级为笑脸，并暂存清空 alt 防文字挤压
         const mini = (w > 5 && w < 140) || (h > 5 && h < 50);
         if (mini) {
@@ -187,29 +201,57 @@
         }
     }
 
-    // 硬加载时 MutationObserver 在图片布局前就处理（实测 0），布局稳定后实测覆盖。
-    // 先全读后全写，避免读 写 交替引发的反复强制重排（layout thrashing）
-    function recheckPending() {
-        const measured = [];
-        document.querySelectorAll('img[data-ph-pending], video[data-ph-pending]').forEach(function (el) {
-            if (el.dataset.phMeasured) return; // 已实测过，尺寸可信
-            const r = el.getBoundingClientRect();
-            if (r.width > 5 || r.height > 5) measured.push([el, r.width, r.height]);
-        });
-        measured.forEach(function (m) {
-            const el = m[0], w = m[1], h = m[2];
-            if (w > 5) el.style.minWidth = Math.round(w) + 'px';
-            if (h > 5) el.style.minHeight = Math.round(h) + 'px';
-            el.dataset.phMeasured = '1';
-            const mini = (w > 5 && w < 140) || (h > 5 && h < 50);
-            if (mini && !el.dataset.phMini) {
-                el.dataset.phMini = '1';
-                if (el.hasAttribute('alt') && el.getAttribute('alt') !== '') {
-                    el.dataset.phAlt = el.getAttribute('alt');
-                    origSetAttr.call(el, 'alt', '');
-                }
+    /* ── blind 占位的实测修正 ──
+     * blind = 拦截时完全无尺寸信息（隐藏容器里、或布局未发生）。
+     * 修正时机：变为可见时（共享 IntersectionObserver，事件驱动零轮询）
+     * 或布局稳定后的两次补测。修正前先摘兜底框再测，避免测到被自己撑大的值。 */
+    let phIO = null;
+
+    function observeBlind(el) {
+        if (typeof IntersectionObserver === 'undefined') return;
+        if (!phIO) {
+            phIO = new IntersectionObserver(function (entries) {
+                entries.forEach(function (en) {
+                    if (!en.isIntersecting) return;
+                    phIO.unobserve(en.target);
+                    fixBlindSize(en.target);
+                });
+            }, { rootMargin: '100px' });
+        }
+        phIO.observe(el);
+    }
+
+    function fixBlindSize(el) {
+        if (!el.dataset.phBlind || el.dataset.phPending !== '1') return;
+        el.style.minWidth = '0';
+        el.style.minHeight = '0';
+        const r = el.getBoundingClientRect(); // 摘兜底后强制重排，读到真实布局
+        const w = r.width > 5 ? r.width : 0;
+        const h = r.height > 5 ? r.height : 0;
+        if (!w && !h) {
+            // 仍不可测（如刚被 JS 隐藏）：恢复兜底，等下次触发
+            el.style.minWidth = '';
+            el.style.minHeight = '';
+            observeBlind(el);
+            return;
+        }
+        delete el.dataset.phBlind;
+        if (w) el.style.minWidth = Math.round(w) + 'px';
+        if (h) el.style.minHeight = Math.round(h) + 'px';
+        const mini = (w > 5 && w < 140) || (h > 5 && h < 50);
+        if (mini && !el.dataset.phMini) {
+            el.dataset.phMini = '1';
+            if (el.hasAttribute('alt') && el.getAttribute('alt') !== '') {
+                el.dataset.phAlt = el.getAttribute('alt');
+                origSetAttr.call(el, 'alt', '');
             }
-        });
+        }
+    }
+
+    // 硬加载时 MutationObserver 在布局前就处理，布局稳定后对 blind 占位统一补测
+    function recheckPending() {
+        document.querySelectorAll('img[data-ph-pending][data-ph-blind], video[data-ph-pending][data-ph-blind]')
+            .forEach(fixBlindSize);
     }
 
     function restoreMedia(el) {
@@ -242,6 +284,7 @@
         el.style.removeProperty('min-width');
         el.style.removeProperty('min-height');
         el.style.removeProperty('aspect-ratio');
+        if (phIO) phIO.unobserve(el); // 已恢复，不再需要可见性修正
 
         // 小占位还原被清空的 alt 文字
         if (el.dataset.phAlt) {
@@ -250,6 +293,7 @@
         }
         delete el.dataset.phMini;
         delete el.dataset.phMeasured;
+        delete el.dataset.phBlind;
         delete el.dataset.phPending;
         delete el.dataset.phPendingSrc;
         delete el.dataset.phPendingSrcset;
@@ -299,9 +343,12 @@
         '  background: #f5f5f5 url("' + phLabelSvg('右键加载') + '") center center no-repeat;',
         '  border: 1px dashed #bbb; border-radius: 4px; box-sizing: border-box;',
         '  cursor: context-menu; color: #888; font-size: 12px;',
-        '  min-width: 130px; min-height: 44px; /* 未量到尺寸时的默认框，防塌缩 */',
         '}',
-        'video[data-ph-pending] { min-height: 60px; }',
+        // 仅"完全无尺寸信息"的占位给兜底框；可见后由 IO 实测修正，
+        // 不能无差别加 130px——会把 16px 的头部图标撑大（占位比实际大的根源）
+        'img[data-ph-pending][data-ph-blind], video[data-ph-pending][data-ph-blind] {',
+        '  min-width: 130px; min-height: 44px;',
+        '}',
         // 放不下文字的小占位：只显示笑脸（alt 已在拦截时暂存清空，恢复时还原）
         'img[data-ph-pending][data-ph-mini], video[data-ph-pending][data-ph-mini] {',
         '  background: #f5f5f5 url("' + phSmileSvg() + '") center center no-repeat;',
