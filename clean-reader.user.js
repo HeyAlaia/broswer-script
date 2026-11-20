@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Clean Reader - 媒体占位 + 阅读模式
 // @namespace    http://tampermonkey.net/
-// @version      3.8
+// @version      3.9
 // @description  媒体自动加载改为右键加载 / Alt+R 阅读模式（Readability + 站点记忆）/ Alt+S 手动选择正文 / Esc 退出
 // @match        *://*/*
 // @grant        GM_addStyle
@@ -129,6 +129,12 @@
             el.removeAttribute('srcset');
             el.removeAttribute('sizes');
         }
+
+        // 必须在摘 src 之前测尺寸——src 一摘布局立刻塌缩，之后就量不到了
+        const rect = el.getBoundingClientRect();
+        if (rect.width > 5) el.style.minWidth = Math.round(rect.width) + 'px';
+        if (rect.height > 5) el.style.minHeight = Math.round(rect.height) + 'px';
+
         el.removeAttribute('src');
         for (let i = 0; i < LAZY_ATTRS.length; i++) el.removeAttribute(LAZY_ATTRS[i]);
 
@@ -153,10 +159,34 @@
             }
         }
 
-        // 尺寸已知的（SPA 场景能测到）用内联样式固定占位框，减少恢复后跳动
-        const rect = el.getBoundingClientRect();
-        if (rect.width > 5) el.style.minWidth = Math.round(rect.width) + 'px';
-        if (rect.height > 5) el.style.minHeight = Math.round(rect.height) + 'px';
+        // 框太小放不下"右键加载"文字（130×44）→ 降级为笑脸，并暂存清空 alt 防文字挤压
+        const mini = (rect.width > 5 && rect.width < 140) || (rect.height > 5 && rect.height < 50);
+        if (mini) {
+            el.dataset.phMini = '1';
+            if (el.hasAttribute('alt')) {
+                el.dataset.phAlt = el.getAttribute('alt');
+                origSetAttr.call(el, 'alt', '');
+            }
+        }
+    }
+
+    // 硬加载时 MutationObserver 在图片布局前就处理（量到 0），布局稳定后复查补上尺寸/笑脸标记
+    function recheckPending() {
+        document.querySelectorAll('img[data-ph-pending], video[data-ph-pending]').forEach(function (el) {
+            if (el.style.minWidth) return; // 已量到过尺寸
+            const r = el.getBoundingClientRect();
+            if (r.width <= 5 && r.height <= 5) return; // 仍未布局，交给 CSS 默认框
+            if (r.width > 5) el.style.minWidth = Math.round(r.width) + 'px';
+            if (r.height > 5) el.style.minHeight = Math.round(r.height) + 'px';
+            const mini = (r.width > 5 && r.width < 140) || (r.height > 5 && r.height < 50);
+            if (mini && !el.dataset.phMini) {
+                el.dataset.phMini = '1';
+                if (el.hasAttribute('alt') && el.getAttribute('alt') !== '') {
+                    el.dataset.phAlt = el.getAttribute('alt');
+                    origSetAttr.call(el, 'alt', '');
+                }
+            }
+        });
     }
 
     function restoreMedia(el) {
@@ -185,6 +215,12 @@
         el.src = el.dataset.phPendingSrc; // phAllow 已放行，钩子不拦截
         if (el.tagName === 'VIDEO') el.load();
 
+        // 小占位还原被清空的 alt 文字
+        if (el.dataset.phAlt) {
+            origSetAttr.call(el, 'alt', el.dataset.phAlt);
+            delete el.dataset.phAlt;
+        }
+        delete el.dataset.phMini;
         delete el.dataset.phPending;
         delete el.dataset.phPendingSrc;
         delete el.dataset.phPendingSrcset;
@@ -217,17 +253,31 @@
         return 'data:image/svg+xml,' + encodeURIComponent(svg);
     }
 
+    // 小占位专用：文字放不下时只显示一个笑脸
+    function phSmileSvg() {
+        const svg =
+            "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'>" +
+            "<circle cx='8' cy='8' r='7' fill='#ffd76e' stroke='#d8b04a' stroke-width='1'/>" +
+            "<circle cx='5.4' cy='6.6' r='1.1' fill='#6b5416'/>" +
+            "<circle cx='10.6' cy='6.6' r='1.1' fill='#6b5416'/>" +
+            "<path d='M4.8 9.6 Q8 12.4 11.2 9.6' stroke='#6b5416' stroke-width='1.3' " +
+            "fill='none' stroke-linecap='round'/></svg>";
+        return 'data:image/svg+xml,' + encodeURIComponent(svg);
+    }
+
     const MEDIA_CSS = [
         'img[data-ph-pending], video[data-ph-pending] {',
         '  background: #f5f5f5 url("' + phLabelSvg('右键加载') + '") center center no-repeat;',
         '  border: 1px dashed #bbb; border-radius: 4px; box-sizing: border-box;',
         '  cursor: context-menu; color: #888; font-size: 12px;',
+        '  min-width: 130px; min-height: 44px; /* 未量到尺寸时的默认框，防塌缩 */',
         '}',
-        // 无 alt 的图塌成 0 尺寸时给个最小可见框；有 alt 的浏览器会用 alt 文字撑开
-        'img[data-ph-pending]:not([alt]), img[data-ph-pending][alt=""] {',
-        '  min-width: 130px; min-height: 44px;',
+        'video[data-ph-pending] { min-height: 60px; }',
+        // 放不下文字的小占位：只显示笑脸（alt 已在拦截时暂存清空，恢复时还原）
+        'img[data-ph-pending][data-ph-mini], video[data-ph-pending][data-ph-mini] {',
+        '  background: #f5f5f5 url("' + phSmileSvg() + '") center center no-repeat;',
+        '  background-size: 16px 16px; min-width: 20px; min-height: 20px;',
         '}',
-        'video[data-ph-pending] { min-width: 130px; min-height: 60px; }',
     ].join('\n');
 
     /* ============================================================
@@ -574,6 +624,9 @@
     const init = function () {
         if (blockMedia) {
             document.querySelectorAll('img, video').forEach(processMedia);
+            // 布局稳定后给没量到尺寸的占位补尺寸/笑脸判定
+            if (document.readyState === 'complete') setTimeout(recheckPending, 200);
+            else window.addEventListener('load', function () { setTimeout(recheckPending, 200); }, { once: true });
         }
         addFloatButton();
     };
