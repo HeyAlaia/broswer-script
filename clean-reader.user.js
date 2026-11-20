@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Clean Reader - 媒体占位 + 阅读模式
 // @namespace    http://tampermonkey.net/
-// @version      3.9
+// @version      4.0
 // @description  媒体自动加载改为右键加载 / Alt+R 阅读模式（Readability + 站点记忆）/ Alt+S 手动选择正文 / Esc 退出
 // @match        *://*/*
 // @grant        GM_addStyle
@@ -130,10 +130,27 @@
             el.removeAttribute('sizes');
         }
 
-        // 必须在摘 src 之前测尺寸——src 一摘布局立刻塌缩，之后就量不到了
+        /* ── 尺寸三源优先级（全部在摘 src 之前，摘后布局立刻塌缩）──
+         * 1. 布局实测 getBoundingClientRect —— CSS/JS/属性/flex 的最终结果，最准
+         * 2. inline style 宽高 —— 未布局时唯一可信的 JS 声明
+         * 3. width/height 属性 —— 有完整声明时推导 aspect-ratio，
+         *    配合站点自身的 max-width:100% 等响应式规则自动保形（浏览器自己算，零成本）
+         */
         const rect = el.getBoundingClientRect();
-        if (rect.width > 5) el.style.minWidth = Math.round(rect.width) + 'px';
-        if (rect.height > 5) el.style.minHeight = Math.round(rect.height) + 'px';
+        let w = rect.width > 5 ? rect.width : 0;
+        let h = rect.height > 5 ? rect.height : 0;
+        if (w > 0 || h > 0) el.dataset.phMeasured = '1'; // 实测过，补测跳过
+        if (!w || !h) {
+            const sw = parseFloat(el.style.width) || 0;
+            const sh = parseFloat(el.style.height) || 0;
+            const aw = parseFloat(el.getAttribute('width')) || 0;
+            const ah = parseFloat(el.getAttribute('height')) || 0;
+            if (!w) w = sw || aw;
+            if (!h) h = sh || ah;
+            if (w && h) el.style.aspectRatio = Math.round(w) + ' / ' + Math.round(h);
+        }
+        if (w) el.style.minWidth = Math.round(w) + 'px';
+        if (h) el.style.minHeight = Math.round(h) + 'px';
 
         el.removeAttribute('src');
         for (let i = 0; i < LAZY_ATTRS.length; i++) el.removeAttribute(LAZY_ATTRS[i]);
@@ -160,7 +177,7 @@
         }
 
         // 框太小放不下"右键加载"文字（130×44）→ 降级为笑脸，并暂存清空 alt 防文字挤压
-        const mini = (rect.width > 5 && rect.width < 140) || (rect.height > 5 && rect.height < 50);
+        const mini = (w > 5 && w < 140) || (h > 5 && h < 50);
         if (mini) {
             el.dataset.phMini = '1';
             if (el.hasAttribute('alt')) {
@@ -170,15 +187,21 @@
         }
     }
 
-    // 硬加载时 MutationObserver 在图片布局前就处理（量到 0），布局稳定后复查补上尺寸/笑脸标记
+    // 硬加载时 MutationObserver 在图片布局前就处理（实测 0），布局稳定后实测覆盖。
+    // 先全读后全写，避免读 写 交替引发的反复强制重排（layout thrashing）
     function recheckPending() {
+        const measured = [];
         document.querySelectorAll('img[data-ph-pending], video[data-ph-pending]').forEach(function (el) {
-            if (el.style.minWidth) return; // 已量到过尺寸
+            if (el.dataset.phMeasured) return; // 已实测过，尺寸可信
             const r = el.getBoundingClientRect();
-            if (r.width <= 5 && r.height <= 5) return; // 仍未布局，交给 CSS 默认框
-            if (r.width > 5) el.style.minWidth = Math.round(r.width) + 'px';
-            if (r.height > 5) el.style.minHeight = Math.round(r.height) + 'px';
-            const mini = (r.width > 5 && r.width < 140) || (r.height > 5 && r.height < 50);
+            if (r.width > 5 || r.height > 5) measured.push([el, r.width, r.height]);
+        });
+        measured.forEach(function (m) {
+            const el = m[0], w = m[1], h = m[2];
+            if (w > 5) el.style.minWidth = Math.round(w) + 'px';
+            if (h > 5) el.style.minHeight = Math.round(h) + 'px';
+            el.dataset.phMeasured = '1';
+            const mini = (w > 5 && w < 140) || (h > 5 && h < 50);
             if (mini && !el.dataset.phMini) {
                 el.dataset.phMini = '1';
                 if (el.hasAttribute('alt') && el.getAttribute('alt') !== '') {
@@ -215,12 +238,18 @@
         el.src = el.dataset.phPendingSrc; // phAllow 已放行，钩子不拦截
         if (el.tagName === 'VIDEO') el.load();
 
+        // 撤掉占位期间加的尺寸约束，让真身按原始布局规则渲染
+        el.style.removeProperty('min-width');
+        el.style.removeProperty('min-height');
+        el.style.removeProperty('aspect-ratio');
+
         // 小占位还原被清空的 alt 文字
         if (el.dataset.phAlt) {
             origSetAttr.call(el, 'alt', el.dataset.phAlt);
             delete el.dataset.phAlt;
         }
         delete el.dataset.phMini;
+        delete el.dataset.phMeasured;
         delete el.dataset.phPending;
         delete el.dataset.phPendingSrc;
         delete el.dataset.phPendingSrcset;
@@ -624,7 +653,10 @@
     const init = function () {
         if (blockMedia) {
             document.querySelectorAll('img, video').forEach(processMedia);
-            // 布局稳定后给没量到尺寸的占位补尺寸/笑脸判定
+            // 两次补测：双帧后（CSS 已应用、布局完成，约 32ms）+ load 后（晚到的样式/字体重排后）
+            requestAnimationFrame(function () {
+                requestAnimationFrame(recheckPending);
+            });
             if (document.readyState === 'complete') setTimeout(recheckPending, 200);
             else window.addEventListener('load', function () { setTimeout(recheckPending, 200); }, { once: true });
         }
